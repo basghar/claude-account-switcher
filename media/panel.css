@@ -59,19 +59,26 @@ button.primary:hover {
 
 .card-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 6px;
 }
 
+/* Wraps instead of clipping: in a narrow sidebar the badges drop to their own
+   line rather than being pushed out of view by a long account label. */
 .title {
   font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.title > .name {
+  overflow-wrap: anywhere;
 }
 
 .badge {
@@ -82,6 +89,8 @@ button.primary:hover {
   border-radius: 10px;
   background: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .badge.active {
@@ -150,9 +159,40 @@ button.primary:hover {
   min-width: 58px;
 }
 
-.icon-btn {
+button.icon-btn {
   flex: 0 0 auto;
-  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+}
+
+button.icon-btn svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+#toolbar .icon-btn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+}
+
+#toolbar .icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+#toolbar {
+  flex-wrap: wrap;
+}
+
+#toolbar > .primary {
+  flex: 1 1 140px;
 }
 
 #empty {

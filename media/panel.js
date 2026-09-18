@@ -14,7 +14,8 @@
   document.getElementById("sayHiBtn").addEventListener("click", () => {
     vscode.postMessage({ type: "sayHiAll" });
   });
-  document.getElementById("refreshBtn").addEventListener("click", () => {
+  const refreshBtn = document.getElementById("refreshBtn");
+  refreshBtn.addEventListener("click", () => {
     vscode.postMessage({ type: "refreshAll" });
   });
 
@@ -81,11 +82,47 @@
     return wrap;
   }
 
-  function iconButton(text, title, onClick) {
+  // Lucide (MIT) outline paths, drawn inline so they inherit the theme colour and
+  // stay crisp at any zoom. Font glyphs like "\u27f3" rendered far too small here.
+  const ICONS = {
+    refresh: ["M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8", "M21 3v5h-5"],
+    pencil: [
+      "M21.17 6.81a1 1 0 0 0-3.98-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.63l4.35-1.32a2 2 0 0 0 .83-.5z",
+      "m15 5 4 4",
+    ],
+    trash: [
+      "M3 6h18",
+      "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6",
+      "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",
+      "M10 11v6",
+      "M14 11v6",
+    ],
+  };
+
+  function icon(name) {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    for (const d of ICONS[name] || []) {
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    }
+    return svg;
+  }
+
+  function iconButton(name, title, onClick) {
     const b = document.createElement("button");
     b.className = "icon-btn";
-    b.textContent = text;
+    b.appendChild(icon(name));
     b.title = title;
+    b.setAttribute("aria-label", title);
     b.addEventListener("click", onClick);
     return b;
   }
@@ -100,24 +137,26 @@
     const title = document.createElement("div");
     title.className = "title";
     const name = document.createElement("span");
+    name.className = "name";
     name.textContent = acc.label;
     title.appendChild(name);
+    if (acc.subscriptionType) {
+      const plan = document.createElement("span");
+      plan.className = "badge";
+      plan.textContent = acc.subscriptionType;
+      title.appendChild(plan);
+    }
     if (acc.isActive) {
       const badge = document.createElement("span");
       badge.className = "badge active";
       badge.textContent = "active";
-      title.appendChild(badge);
-    } else if (acc.subscriptionType) {
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = acc.subscriptionType;
       title.appendChild(badge);
     }
     head.appendChild(title);
 
     const headBtns = document.createElement("div");
     headBtns.appendChild(
-      iconButton("⟳", "Refresh usage limits", () =>
+      iconButton("refresh", "Refresh usage limits", () =>
         vscode.postMessage({ type: "refresh", id: acc.id })
       )
     );
@@ -132,7 +171,7 @@
       const s = document.createElement("div");
       s.className = "sub";
       s.style.marginTop = "8px";
-      s.textContent = "No usage data — click ⟳";
+      s.textContent = "No usage data — click the refresh icon";
       el.appendChild(s);
     }
 
@@ -181,10 +220,10 @@
     }
 
     actions.appendChild(
-      iconButton("✎", "Rename", () => vscode.postMessage({ type: "rename", id: acc.id }))
+      iconButton("pencil", "Rename", () => vscode.postMessage({ type: "rename", id: acc.id }))
     );
     actions.appendChild(
-      iconButton("🗑", "Remove profile", () => vscode.postMessage({ type: "remove", id: acc.id }))
+      iconButton("trash", "Remove profile", () => vscode.postMessage({ type: "remove", id: acc.id }))
     );
     el.appendChild(actions);
 
@@ -206,6 +245,8 @@
 
   // Refresh countdowns every minute.
   setInterval(render, 60000);
+
+  refreshBtn.appendChild(icon("refresh"));
 
   vscode.postMessage({ type: "ready" });
 })();

@@ -24,6 +24,8 @@ interface RawLimit {
   severity?: string;
   resets_at?: string | null;
   is_active?: boolean;
+  /** Present on `weekly_scoped` limits: the per-model bucket this window covers. */
+  scope?: { model?: { display_name?: string | null } | null } | null;
 }
 interface RawUsage {
   five_hour?: RawWindow | null;
@@ -31,7 +33,19 @@ interface RawUsage {
   limits?: RawLimit[];
 }
 
-function labelFor(kind: string, group: string): string {
+/**
+ * Builds the display label for one raw limit.
+ *
+ * Most kinds are fixed buckets, but `weekly_scoped` is a per-model window whose
+ * name is server-supplied via `scope.model.display_name` (e.g. "Fable"). Claude
+ * Code renders those as `Weekly <display_name>`; without the scope lookup every
+ * model bucket collapses to a bare "Weekly".
+ */
+function labelFor(limit: RawLimit): string {
+  const kind = limit.kind ?? "";
+  const group = limit.group ?? "";
+  const modelName = limit.scope?.model?.display_name?.trim();
+
   switch (kind) {
     case "session":
       return "Session (5h)";
@@ -41,7 +55,10 @@ function labelFor(kind: string, group: string): string {
       return "Weekly (Opus)";
     case "weekly_sonnet":
       return "Weekly (Sonnet)";
+    case "weekly_scoped":
+      return modelName ? `Weekly ${modelName}` : "Weekly (model)";
     default:
+      if (modelName) return `Weekly ${modelName}`;
       if (group === "session") return "Session (5h)";
       if (group === "weekly") return "Weekly";
       return kind || group || "Limit";
@@ -57,7 +74,7 @@ export function parseUsage(raw: RawUsage): UsageSnapshot {
       const percent = typeof l.percent === "number" ? l.percent : 0;
       windows.push({
         kind: l.kind ?? l.group ?? "limit",
-        label: labelFor(l.kind ?? "", l.group ?? ""),
+        label: labelFor(l),
         percent: Math.max(0, Math.min(100, Math.round(percent))),
         severity: l.severity ?? "normal",
         resetsAt: l.resets_at ?? null,

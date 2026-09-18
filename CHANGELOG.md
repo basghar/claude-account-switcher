@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1
+
+- Per-model weekly limits now show the model's name. `/api/oauth/usage` returns these as
+  `kind: "weekly_scoped"` with the name in `scope.model.display_name`; the label table had no
+  case for that kind, so every model bucket collapsed to a bare "Weekly" instead of
+  "Weekly Fable".
+- The active account now shows its plan badge as well as the "active" badge. The two were an
+  either/or, so the plan was hidden on exactly the account you were using.
+- Account headers wrap instead of clipping, so badges stay visible in a narrow sidebar.
+- Replaced the refresh, rename and delete glyphs with inline SVG icons at a legible size. The
+  old text characters rendered tiny and inconsistently across platforms.
+
 ## 0.3.0
 
 - Added macOS support. Credentials are read from and written to the login Keychain, where

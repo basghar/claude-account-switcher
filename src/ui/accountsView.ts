@@ -146,7 +146,7 @@ export class AccountsViewProvider implements vscode.WebviewViewProvider {
     <button id="addBtn" class="primary">+ Save current account</button>
     <button id="loginBtn" title="Open Claude login">Login</button>
     <button id="sayHiBtn" title="Say Hi on inactive accounts">Hi</button>
-    <button id="refreshBtn" title="Refresh usage limits">⟳</button>
+    <button id="refreshBtn" class="icon-btn" title="Refresh usage limits" aria-label="Refresh usage limits"></button>
   </div>
   <div id="list"></div>
   <div id="empty" class="hidden">

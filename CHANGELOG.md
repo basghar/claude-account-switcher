@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Added macOS support. Credentials are read from and written to the login Keychain, where
+  Claude Code keeps them on macOS, including a per-account Keychain item for each independent
+  window. Windows and Linux keep using `.credentials.json`.
+- Added `claudeSwitcher.credentialBackend`, `claudeSwitcher.keychainService`, and
+  **Claude: Diagnose credential storage**.
+
 ## 0.2.5
 
 - Added browser-based OAuth authorization that works without Claude Code CLI.

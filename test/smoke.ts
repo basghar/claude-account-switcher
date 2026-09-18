@@ -3,6 +3,16 @@ import * as os from "os";
 import * as path from "path";
 import { parseUsage } from "../src/usage";
 import { CredentialsManager } from "../src/credentials";
+import {
+  FileCredentialBackend,
+  KeychainCredentialBackend,
+} from "../src/credentialBackend";
+import {
+  SecurityResult,
+  hashedServiceName,
+  serviceCandidates,
+  setSecurityRunner,
+} from "../src/macKeychain";
 import { requiresProfileReauthorization, TokenRefresher } from "../src/oauth";
 import { AccountStore } from "../src/accountStore";
 import { buildBrowserAuthorizationUrl, parseBrowserTokenResponse } from "../src/browserOAuth";
@@ -10,6 +20,14 @@ import { ProfileActivityRegistry } from "../src/profileActivity";
 import { SwitchService } from "../src/switchService";
 
 let failures = 0;
+
+/** A manager over the temp credentials file that TEST_CRED_PATH points at. */
+function fileManager(): CredentialsManager {
+  return new CredentialsManager(
+    new FileCredentialBackend(() => process.env.TEST_CRED_PATH)
+  );
+}
+
 function check(name: string, cond: boolean): void {
   console.log((cond ? "  PASS" : "  FAIL") + " - " + name);
   if (!cond) failures++;
@@ -31,6 +49,23 @@ check("sessionPercent = 12", snap.sessionPercent === 12);
 check("weeklyPercent = 8", snap.weeklyPercent === 8);
 check("session label", snap.windows[0].label === "Session (5h)");
 
+// Per-model weekly windows carry their name in scope.model.display_name.
+const scoped = parseUsage({
+  limits: [
+    { kind: "session", group: "session", percent: 22, severity: "normal", resets_at: null },
+    { kind: "weekly_all", group: "weekly", percent: 30, severity: "normal", resets_at: null },
+    { kind: "weekly_scoped", group: "weekly", percent: 29, severity: "normal", resets_at: null, scope: { model: { display_name: "Fable" } } },
+  ],
+} as never);
+check("weekly_scoped uses the server display name", scoped.windows[2].label === "Weekly Fable");
+check("weekly_all still labelled", scoped.windows[1].label === "Weekly (all)");
+check("scoped does not hijack weeklyPercent", scoped.weeklyPercent === 30);
+
+const scopedUnnamed = parseUsage({
+  limits: [{ kind: "weekly_scoped", group: "weekly", percent: 5, severity: "normal", resets_at: null }],
+} as never);
+check("weekly_scoped without a name falls back", scopedUnnamed.windows[0].label === "Weekly (model)");
+
 const fb = parseUsage({ five_hour: { utilization: 50, resets_at: null }, seven_day: { utilization: 90, resets_at: null } } as never);
 check("fallback sessionPercent = 50", fb.sessionPercent === 50);
 check("fallback weeklyPercent = 90", fb.weeklyPercent === 90);
@@ -38,58 +73,286 @@ check("fallback weeklyPercent = 90", fb.weeklyPercent === 90);
 const em = parseUsage({} as never);
 check("empty -> 0 windows, null percents", em.windows.length === 0 && em.sessionPercent === null);
 
-console.log("CredentialsManager (temp file):");
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cas-test-"));
-const credPath = path.join(tmpDir, ".credentials.json");
-process.env.TEST_CRED_PATH = credPath;
-const mgr = new CredentialsManager();
+async function runFileCredentialsTests(): Promise<void> {
+  console.log("CredentialsManager (file backend):");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cas-test-"));
+  const credPath = path.join(tmpDir, ".credentials.json");
+  process.env.TEST_CRED_PATH = credPath;
+  const mgr = fileManager();
 
-const credsA = { accessToken: "AAA", refreshToken: "ra", expiresAt: 111, scopes: ["x"], subscriptionType: "pro" };
-const credsB = { accessToken: "BBB", refreshToken: "rb", expiresAt: 222, scopes: ["y"], subscriptionType: "max" };
+  const credsA = { accessToken: "AAA", refreshToken: "ra", expiresAt: 111, scopes: ["x"], subscriptionType: "pro" };
+  const credsB = { accessToken: "BBB", refreshToken: "rb", expiresAt: 222, scopes: ["y"], subscriptionType: "max" };
 
-check("path resolves to override", mgr.getCredentialsPath() === credPath);
-mgr.writeCreds(credsA as never);
-check("write + read account A", mgr.readCurrent()?.accessToken === "AAA");
+  check("path resolves to override", mgr.getCredentialsPath() === credPath);
+  mgr.writeCreds(credsA as never);
+  check("write + read account A", mgr.readCurrent()?.accessToken === "AAA");
 
-mgr.backupCurrent();
-check("hasBackup after backup", mgr.hasBackup() === true);
+  await mgr.backupCurrent();
+  check("hasBackup after backup", (await mgr.hasBackup()) === true);
 
-mgr.writeCreds(credsB as never);
-check("switch to account B", mgr.readCurrent()?.accessToken === "BBB");
+  mgr.writeCreds(credsB as never);
+  check("switch to account B", mgr.readCurrent()?.accessToken === "BBB");
 
-mgr.restoreBackup();
-check("undo restores account A", mgr.readCurrent()?.accessToken === "AAA");
+  await mgr.restoreBackup();
+  check("undo restores account A", mgr.readCurrent()?.accessToken === "AAA");
 
-fs.writeFileSync(credPath, JSON.stringify({ claudeAiOauth: credsA, otherField: 123 }));
-mgr.writeCreds(credsB as never);
-const rawAfter = JSON.parse(fs.readFileSync(credPath, "utf8"));
-check("preserves extra fields on write", rawAfter.otherField === 123 && rawAfter.claudeAiOauth.accessToken === "BBB");
+  fs.writeFileSync(credPath, JSON.stringify({ claudeAiOauth: credsA, otherField: 123 }));
+  mgr.writeCreds(credsB as never);
+  const rawAfter = JSON.parse(fs.readFileSync(credPath, "utf8"));
+  check("preserves extra fields on write", rawAfter.otherField === 123 && rawAfter.claudeAiOauth.accessToken === "BBB");
 
-check(
-  "does not overwrite a credential file that Claude already rotated",
-  mgr.writeCredsIfCurrent(credsA as never, credsB as never) === false &&
-    mgr.readCurrent()?.refreshToken === "rb"
-);
-check(
-  "compare-and-swap persists a rotation from the current generation",
-  mgr.writeCredsIfCurrent(credsB as never, credsA as never) === true &&
-    mgr.readCurrent()?.refreshToken === "ra"
-);
+  check(
+    "does not overwrite a credential file that Claude already rotated",
+    mgr.writeCredsIfCurrent(credsA as never, credsB as never) === false &&
+      mgr.readCurrent()?.refreshToken === "rb"
+  );
+  check(
+    "compare-and-swap persists a rotation from the current generation",
+    mgr.writeCredsIfCurrent(credsB as never, credsA as never) === true &&
+      mgr.readCurrent()?.refreshToken === "ra"
+  );
 
-fs.writeFileSync(credPath, JSON.stringify({ claudeAiOauth: { accessToken: "", refreshToken: "", expiresAt: 0, scopes: [] } }));
-check("empty tokens are not a current login", mgr.readCurrent() === null);
+  fs.writeFileSync(credPath, JSON.stringify({ claudeAiOauth: { accessToken: "", refreshToken: "", expiresAt: 0, scopes: [] } }));
+  check("empty tokens are not a current login", mgr.readCurrent() === null);
 
-mgr.writeCreds(credsA as never);
-let refusedIncompleteWrite = false;
-try {
-  mgr.writeCreds({ accessToken: "", refreshToken: "", expiresAt: 0, scopes: [] } as never);
-} catch {
-  refusedIncompleteWrite = true;
+  mgr.writeCreds(credsA as never);
+  let refusedIncompleteWrite = false;
+  try {
+    mgr.writeCreds({ accessToken: "", refreshToken: "", expiresAt: 0, scopes: [] } as never);
+  } catch {
+    refusedIncompleteWrite = true;
+  }
+  check("refuses to write incomplete credentials", refusedIncompleteWrite);
+  check("incomplete write does not overwrite existing credentials", mgr.readCurrent()?.accessToken === "AAA");
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 }
-check("refuses to write incomplete credentials", refusedIncompleteWrite);
-check("incomplete write does not overwrite existing credentials", mgr.readCurrent()?.accessToken === "AAA");
 
-fs.rmSync(tmpDir, { recursive: true, force: true });
+/**
+ * An in-memory stand-in for `security`, so the keychain backend can be exercised on any
+ * OS without touching a real keychain. It mirrors the behaviour the real binary was
+ * observed to have: exit 44 for a missing item, and a doubled password on stdin because
+ * `-w` without a value is a confirmation prompt.
+ */
+function fakeKeychain() {
+  const items = new Map<string, string>();
+  const reads: string[] = [];
+  let denyService: string | null = null;
+
+  const ok = (stdout = ""): SecurityResult => ({
+    status: 0,
+    stdout,
+    stderr: "",
+    timedOut: false,
+    spawnFailed: false,
+  });
+  const fail = (status: number, stderr = ""): SecurityResult => ({
+    status,
+    stdout: "",
+    stderr,
+    timedOut: false,
+    spawnFailed: false,
+  });
+
+  const valueOf = (args: string[], flag: string) => args[args.indexOf(flag) + 1];
+  const store = (service: string, value: string, update: boolean): SecurityResult => {
+    if (items.has(service) && !update) {
+      return fail(45, "The specified item already exists in the keychain.");
+    }
+    items.set(service, value);
+    return ok();
+  };
+
+  setSecurityRunner((args, input) => {
+    const service = valueOf(args, "-s");
+
+    if (args[0] === "find-generic-password") {
+      if (!items.has(service)) {
+        return fail(44, "The specified item could not be found in the keychain.");
+      }
+      if (!args.includes("-w")) {
+        return ok(`svce="${service}"`);
+      }
+      reads.push(service);
+      if (denyService === service) {
+        return fail(51, "User interaction is not allowed.");
+      }
+      return ok(items.get(service) + "\n");
+    }
+
+    // `security -i` runs one command per stdin line; its parser buffer is 4 KiB.
+    if (args[0] === "-i") {
+      const line = (input ?? "").replace(/\n$/, "");
+      if (line.length > 4096) {
+        return fail(1, 'security: unknown command "' + line.slice(4096, 4130) + '"');
+      }
+      const m = /^add-generic-password( -U)? -a "([^"]*)" -s "([^"]*)" -X "([0-9a-f]*)"$/.exec(line);
+      if (!m) {
+        return fail(1, "security: unknown command");
+      }
+      return store(m[3], Buffer.from(m[4], "hex").toString("utf8"), m[1] !== undefined);
+    }
+
+    if (args[0] === "add-generic-password") {
+      const update = args.includes("-U");
+      if (args.includes("-X")) {
+        return store(service, Buffer.from(valueOf(args, "-X"), "hex").toString("utf8"), update);
+      }
+      // `-w` with no value is a password prompt: it asks twice and keeps at most 128 bytes.
+      const halves = (input ?? "").split("\n").filter((l) => l.length > 0);
+      if (halves.length !== 2 || halves[0] !== halves[1]) {
+        return fail(1, "passwords don't match");
+      }
+      return store(service, halves[0].slice(0, 128), update);
+    }
+
+    if (args[0] === "delete-generic-password") {
+      return items.delete(service) ? ok() : fail(44);
+    }
+    return fail(1, "unsupported");
+  });
+
+  return {
+    items,
+    reads,
+    deny: (service: string | null) => {
+      denyService = service;
+    },
+    dispose: () => setSecurityRunner(null),
+  };
+}
+
+async function runKeychainCredentialsTests(): Promise<void> {
+  console.log("CredentialsManager (keychain backend):");
+
+  const fake = fakeKeychain();
+  const secretValues = new Map<string, string>();
+  const secrets = {
+    get: async (key: string) => secretValues.get(key),
+    store: async (key: string, value: string) => {
+      secretValues.set(key, value);
+    },
+    delete: async (key: string) => {
+      secretValues.delete(key);
+    },
+  } as never;
+
+  try {
+    const mgr = new CredentialsManager(new KeychainCredentialBackend(secrets));
+    const credsA = { accessToken: "AAA", refreshToken: "ra", expiresAt: 111, scopes: ["x"] };
+    const credsB = { accessToken: "BBB", refreshToken: "rb", expiresAt: 222, scopes: ["y"] };
+
+    check("no keychain item reads as logged out", mgr.readCurrent() === null);
+
+    const realistic = {
+      accessToken: "sk-ant-oat01-" + "a".repeat(95),
+      refreshToken: "sk-ant-ort01-" + "r".repeat(95),
+      expiresAt: 1789735946903,
+      refreshTokenExpiresAt: 1821271946903,
+      scopes: ["user:file_upload", "user:inference", "user:mcp_servers", "user:profile"],
+      subscriptionType: "max",
+      rateLimitTier: "default_claude_max_5x",
+    };
+    mgr.writeCreds(realistic as never);
+    check(
+      "a real-sized credential blob (>128 bytes) survives the write intact",
+      mgr.readCurrent()?.accessToken === realistic.accessToken &&
+        mgr.readCurrent()?.refreshToken === realistic.refreshToken
+    );
+    const huge = { ...realistic, accessToken: "x".repeat(3000) };
+    mgr.writeCreds(huge as never);
+    check(
+      "a blob too large for `security -i` still round-trips via argv",
+      mgr.readCurrent()?.accessToken === huge.accessToken
+    );
+    fake.items.clear();
+    check("backend reports no credentials file path", mgr.getCredentialsPath() === undefined);
+
+    mgr.writeCreds(credsA as never);
+    check("write + read account A", mgr.readCurrent()?.accessToken === "AAA");
+    check(
+      "seeds the default config dir under the legacy service name",
+      fake.items.has("Claude Code-credentials")
+    );
+
+    mgr.writeCreds(credsB as never);
+    check("switch to account B", mgr.readCurrent()?.accessToken === "BBB");
+    check("update replaces in place rather than adding an item", fake.items.size === 1);
+
+    await mgr.backupCurrent();
+    check("backup is kept in secret storage, not on disk", (await mgr.hasBackup()) === true);
+    mgr.writeCreds(credsA as never);
+    await mgr.restoreBackup();
+    check("undo restores account B", mgr.readCurrent()?.accessToken === "BBB");
+
+    fake.items.set(
+      "Claude Code-credentials",
+      JSON.stringify({ claudeAiOauth: credsA, mcpOAuth: { keep: "me" } })
+    );
+    mgr.writeCreds(credsB as never);
+    const stored = JSON.parse(fake.items.get("Claude Code-credentials") as string);
+    check(
+      "preserves keys owned by Claude Code",
+      stored.mcpOAuth?.keep === "me" && stored.claudeAiOauth.accessToken === "BBB"
+    );
+
+    check(
+      "does not overwrite a credential Claude already rotated",
+      mgr.writeCredsIfCurrent(credsA as never, credsB as never) === false &&
+        mgr.readCurrent()?.refreshToken === "rb"
+    );
+    check(
+      "compare-and-swap persists a rotation from the current generation",
+      mgr.writeCredsIfCurrent(credsB as never, credsA as never) === true &&
+        mgr.readCurrent()?.refreshToken === "ra"
+    );
+
+    let refusedIncompleteWrite = false;
+    try {
+      mgr.writeCreds({ accessToken: "", refreshToken: "", expiresAt: 0, scopes: [] } as never);
+    } catch {
+      refusedIncompleteWrite = true;
+    }
+    check("refuses to write incomplete credentials", refusedIncompleteWrite);
+    check("incomplete write leaves the item alone", mgr.readCurrent()?.accessToken === "AAA");
+
+    // An isolated profile directory gets its own item and must never fall back to the
+    // primary login: reading it would report the wrong account, writing it would clobber
+    // a login the user did not ask us to touch.
+    const isolated = path.join(os.tmpdir(), "cas-isolated-profile");
+    check(
+      "isolated config dir is not a logged-in account yet",
+      mgr.readCurrent(isolated) === null
+    );
+    mgr.writeCreds(credsB as never, isolated);
+    check(
+      "isolated config dir gets its own hashed item",
+      fake.items.has(hashedServiceName(isolated)) && fake.items.size === 2
+    );
+    check(
+      "isolated write leaves the primary login untouched",
+      mgr.readCurrent()?.accessToken === "AAA" && mgr.readCurrent(isolated)?.accessToken === "BBB"
+    );
+    check(
+      "isolated dir never probes the primary item",
+      serviceCandidates(isolated).every((name) => name !== "Claude Code-credentials")
+    );
+
+    check(
+      "existence check does not decrypt the item",
+      mgr.exists() && !fake.reads.includes(hashedServiceName(isolated) + "-probe")
+    );
+
+    fake.deny("Claude Code-credentials");
+    check(
+      "a refused keychain read is not reported as logged out",
+      mgr.readCurrent() === null && mgr.exists()
+    );
+    fake.deny(null);
+  } finally {
+    fake.dispose();
+  }
+}
 
 function createStore(): AccountStore {
   const globalState = new Map<string, unknown>();
@@ -269,7 +532,7 @@ async function runUsagePollerTests(): Promise<void> {
   const poller = new UsagePoller(
     store,
     new TokenRefresher(),
-    new CredentialsManager(),
+    fileManager(),
     () => 240,
     () => undefined,
     {
@@ -299,7 +562,7 @@ async function runUsagePollerTests(): Promise<void> {
   const brokenPoller = new UsagePoller(
     brokenStore,
     new TokenRefresher(),
-    new CredentialsManager(),
+    fileManager(),
     () => 240,
     () => undefined,
     {
@@ -337,7 +600,7 @@ async function runUsagePollerTests(): Promise<void> {
   const restartPoller = new UsagePoller(
     restartStore,
     new TokenRefresher(),
-    new CredentialsManager(),
+    fileManager(),
     () => 240,
     () => undefined,
     { readProfileCreds: () => afterRestart }
@@ -356,7 +619,7 @@ async function runUsagePollerTests(): Promise<void> {
   const stalePoller = new UsagePoller(
     restartStore,
     new TokenRefresher(),
-    new CredentialsManager(),
+    fileManager(),
     () => 240,
     () => undefined,
     { readProfileCreds: () => staleReplica }
@@ -393,7 +656,7 @@ async function runUsagePollerTests(): Promise<void> {
     const recoveredPoller = new UsagePoller(
       recoveredStore,
       new TokenRefresher(),
-      new CredentialsManager(),
+      fileManager(),
       () => 240,
       () => undefined,
       { readProfileCreds: () => afterRestart }
@@ -424,7 +687,7 @@ async function runUsagePollerTests(): Promise<void> {
     const skippedPoller = new UsagePoller(
       skippedStore,
       new TokenRefresher(),
-      new CredentialsManager(),
+      fileManager(),
       () => 240,
       () => undefined
     );
@@ -443,7 +706,7 @@ async function runUsagePollerTests(): Promise<void> {
     const activePoller = new UsagePoller(
       activeStore,
       new TokenRefresher(),
-      new CredentialsManager(),
+      fileManager(),
       () => 240,
       () => undefined,
       { isProfileActive: () => true }
@@ -463,7 +726,7 @@ async function runSwitchServiceTests(): Promise<void> {
   process.env.TEST_CRED_PATH = credPath;
 
   const store = createStore();
-  const manager = new CredentialsManager();
+  const manager = fileManager();
   const profile = await store.addFromCreds("Newater2", {
     accessToken: "stored-access",
     refreshToken: "",
@@ -588,7 +851,9 @@ async function runTokenRefresherTests(): Promise<void> {
 
 runProfileActivityTests();
 runBrowserOAuthTests();
-runAccountStoreTests()
+runFileCredentialsTests()
+  .then(runKeychainCredentialsTests)
+  .then(runAccountStoreTests)
   .then(runUsagePollerTests)
   .then(runSwitchServiceTests)
   .then(runTokenRefresherTests)

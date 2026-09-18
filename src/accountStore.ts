@@ -16,7 +16,7 @@ const SECRET_PREFIX = "claudeSwitcher.account.";
  * account id is workspace-scoped so independent VS Code windows can use different
  * accounts without racing through one global marker.
  *
- * The "active" account is the one whose tokens are currently in .credentials.json.
+ * The "active" account is the one whose tokens Claude Code currently authenticates with.
  * Because Claude Code rotates tokens, the source of truth is the remembered
  * `activeId`, and we sync the active profile's creds from the file (syncActiveFromFile).
  */

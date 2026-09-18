@@ -13,7 +13,9 @@ import {
   hasUsableOAuthCreds,
   shouldPreferCredentialCandidate,
 } from "./credentialValidation";
+import { BackendPreference, createCredentialBackend } from "./credentialBackend";
 import { CredentialsManager } from "./credentials";
+import { keychainAccount, serviceCandidates } from "./macKeychain";
 import { getAccountConfigDir } from "./isolatedConfig";
 import { TokenRefresher } from "./oauth";
 import { ProfileActivityRegistry } from "./profileActivity";
@@ -26,7 +28,17 @@ import { WarmupService } from "./warmup";
 
 export function activate(context: vscode.ExtensionContext): void {
   const store = new AccountStore(context);
-  const credentials = new CredentialsManager();
+  const cfg = () => vscode.workspace.getConfiguration("claudeSwitcher");
+  const credentials = new CredentialsManager(
+    createCredentialBackend(
+      context.secrets,
+      cfg().get<BackendPreference>("credentialBackend", "auto"),
+      () => cfg().get<string>("credentialsPath", ""),
+      () => ({
+        serviceOverride: cfg().get<string>("keychainService", ""),
+      })
+    )
+  );
   const refresher = new TokenRefresher();
   const browserOAuth = new BrowserOAuthLogin();
   const profileActivity = new ProfileActivityRegistry(context);
@@ -248,7 +260,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const configDir = getAccountConfigDir(context, id);
     try {
-      credentials.moveCredentialsAside(configDir, "reauth-backup");
+      await credentials.moveCredentialsAside(configDir, "reauth-backup");
     } catch (e) {
       vscode.window.showWarningMessage((e as Error).message);
       return;
@@ -523,6 +535,12 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("claudeSwitcher.openPanel", () => {
       void vscode.commands.executeCommand("claudeSwitcher.accountsView.focus");
+    }),
+    vscode.commands.registerCommand("claudeSwitcher.diagnoseCredentialStorage", async () => {
+      const channel = vscode.window.createOutputChannel("Claude Account Switcher");
+      channel.clear();
+      channel.appendLine(describeCredentialStorage(context, credentials, store));
+      channel.show(true);
     })
   );
 
@@ -701,4 +719,51 @@ function normalizeEmail(value: string | undefined): string | undefined {
 function normalizeIdentityValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+/**
+ * Reports where credentials are being read from and whether anything is there.
+ *
+ * The macOS Keychain item is not part of Claude Code's public contract and its name has
+ * changed between releases, so when detection fails the useful thing is knowing exactly
+ * which names were probed.
+ */
+function describeCredentialStorage(
+  context: vscode.ExtensionContext,
+  credentials: CredentialsManager,
+  store: AccountStore
+): string {
+  const lines: string[] = [
+    `Platform:        ${process.platform}`,
+    `Backend:         ${credentials.backendKind}`,
+    `Default config:  ${credentials.getConfigDir()}`,
+    "",
+    "Active account",
+    `  Location:      ${credentials.describe()}`,
+    `  Credential:    ${credentials.exists() ? "found" : "not found"}`,
+    `  Usable tokens: ${hasUsableOAuthCreds(credentials.readCurrent()) ? "yes" : "no"}`,
+  ];
+
+  if (credentials.backendKind === "keychain") {
+    lines.push(
+      `  Probed names:  ${serviceCandidates().join(", ")}`,
+      `  Keychain user: ${keychainAccount()}`
+    );
+  }
+
+  const profiles = store.list();
+  if (profiles.length > 0) {
+    lines.push("", "Isolated profile directories");
+    for (const profile of profiles) {
+      const configDir = getAccountConfigDir(context, profile.id);
+      lines.push(
+        `  ${profile.label}`,
+        `    Config dir:  ${configDir}`,
+        `    Location:    ${credentials.describe(configDir)}`,
+        `    Credential:  ${credentials.exists(configDir) ? "found" : "not found"}`
+      );
+    }
+  }
+
+  return lines.join("\n");
 }

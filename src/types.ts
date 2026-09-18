@@ -1,6 +1,6 @@
 /**
- * Raw structure stored in ~/.claude/.credentials.json
- * { "claudeAiOauth": { ... } }
+ * Raw credential blob Claude Code stores: `{ "claudeAiOauth": { ... } }`, in
+ * ~/.claude/.credentials.json on Windows and Linux and in the macOS login Keychain.
  */
 export interface OAuthCreds {
   accessToken: string;

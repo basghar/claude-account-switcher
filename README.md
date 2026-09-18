@@ -140,6 +140,37 @@ Open one generated window per account you want to run. The extension refuses to 
 active window for the same saved profile, because the upstream refresh token belongs to that
 account and can rotate.
 
+## Credential storage
+
+The extension stores credentials wherever Claude Code itself does, so the CLI picks up a switch
+without any extra configuration.
+
+| Platform | Where Claude Code keeps credentials |
+| --- | --- |
+| macOS | login Keychain, generic password `Claude Code-credentials` |
+| Windows | `%USERPROFILE%\.claude\.credentials.json` |
+| Linux | `~/.claude/.credentials.json` |
+
+On macOS the `.credentials.json` file is not the store — Claude Code writes it only when the
+Keychain refuses a write, such as over SSH or with a locked keychain. The extension therefore
+uses the Keychain directly and does not fall back to that file.
+
+The Keychain item is keyed to the config directory, so each isolated account window gets its own
+item: `Claude Code-credentials-<first 8 hex of sha256(config dir)>`. The unsuffixed name belongs
+to the default `~/.claude` directory, and isolated profiles never read or write it.
+
+Run **Claude: Diagnose credential storage** to see which backend is active, which item names were
+probed, and whether a credential was found for each profile.
+
+Relevant settings:
+
+- `claudeSwitcher.credentialBackend` — `auto` (default), `keychain`, or `file`. Use `file` on a
+  macOS machine you reach over SSH, where Claude Code itself falls back to the file.
+- `claudeSwitcher.keychainService` — override the Keychain item name.
+
+Every write is read back and compared before the switch is reported as done, so a write the
+keychain did not accept surfaces as an error rather than as Claude Code asking you to log in.
+
 ## Security and disclaimers
 
 - This extension does **not** collect telemetry, analytics, account identifiers, prompts,
@@ -147,21 +178,27 @@ account and can rotate.
 - No login data is sent to the extension author, publisher, marketplace backend, or any custom
   third-party server controlled by this extension.
 - Saved profile secrets are stored in VS Code's encrypted **SecretStorage**.
-- Claude Code itself requires local `.credentials.json` files. For account switching, Say Hi,
-  and independent windows, the extension writes credentials only to local Claude Code config
-  directories on your machine, including isolated per-account `CLAUDE_CONFIG_DIR` folders under
-  the extension's global storage.
+- The extension reads and writes credentials only where Claude Code already keeps them on your
+  machine: the macOS login Keychain, or `.credentials.json` on Windows and Linux, including the
+  isolated per-account `CLAUDE_CONFIG_DIR` folders under the extension's global storage.
+- On macOS, credentials are handed to `security -i` on standard input, never as a
+  command-line argument, so they do not appear in the process list. Only a blob too large for
+  that (over 4 KB, which takes an unusually large `mcpOAuth` section) goes on the command
+  line, as Claude Code itself does.
 - Credentials are never intentionally logged. Protect your machine and OS user account, because
-  anyone with local filesystem access to your user profile may be able to read Claude Code
-  credential files.
+  anyone with local access to your user session may be able to read Claude Code credentials.
 - Network requests made by the extension go only to Anthropic endpoints needed for token refresh
   and usage-limit checks. Say Hi is executed through the local Claude Code CLI, which communicates
   with Anthropic as Claude Code normally does.
 - This tool is for managing **your own** accounts.
 - The usage endpoint and the token-refresh flow are **unofficial** and may change or stop working
   on Anthropic's side.
-- Currently the file-based `.credentials.json` model is supported (Windows/Linux). The macOS
-  Keychain is not supported yet.
+- The macOS Keychain item is updated in place with the same `security` invocation Claude Code
+  uses, so its access control list stays exactly as Claude Code left it. See
+  [Credential storage](#credential-storage).
+- The macOS Keychain item name is not part of Claude Code's public interface and has changed
+  between releases. The extension detects it, and `claudeSwitcher.keychainService` overrides it
+  if a future release changes it again.
 
 ## Development
 

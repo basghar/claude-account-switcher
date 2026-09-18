@@ -10,8 +10,8 @@ export interface SwitchResult {
 }
 
 /**
- * Orchestration: capturing the current account, switching (swapping the file),
- * reloading the window, and undoing the last switch.
+ * Orchestration: capturing the current account, switching (replacing the stored
+ * credential), reloading the window, and undoing the last switch.
  */
 export class SwitchService {
   constructor(
@@ -19,14 +19,15 @@ export class SwitchService {
     private readonly credentials: CredentialsManager
   ) {}
 
-  /** Saves the currently logged-in account (from the file) as a new profile. */
+  /** Saves the currently logged-in account as a new profile. */
   async captureCurrent(): Promise<{ ok: boolean; message: string }> {
     const creds = this.credentials.readCurrent();
     if (!creds) {
       return {
         ok: false,
         message:
-          "No logged-in account found in .credentials.json. Log in to Claude Code and try again.",
+          `No logged-in Claude account found in ${this.credentials.describe()}. ` +
+          "Log in to Claude Code and try again.",
       };
     }
     if (!hasUsableOAuthCreds(creds)) {
@@ -65,7 +66,7 @@ export class SwitchService {
     return { ok: true, message: `Saved profile "${profile.label}".` };
   }
 
-  /** Switches to the given profile: backup + write to file + (optionally) reload. */
+  /** Switches to the given profile: backup + write + (optionally) reload. */
   async switchTo(id: string): Promise<SwitchResult> {
     const profile = this.store.get(id);
     if (!profile) {
@@ -84,11 +85,14 @@ export class SwitchService {
       return { ok: false, message: `"${profile.label}" is already active.` };
     }
 
-    this.credentials.backupCurrent();
+    await this.credentials.backupCurrent();
     try {
       this.credentials.writeCreds(creds);
     } catch (e) {
-      return { ok: false, message: "Failed to write credentials file: " + (e as Error).message };
+      return {
+        ok: false,
+        message: `Failed to write credentials to ${this.credentials.describe()}: ${(e as Error).message}`,
+      };
     }
     await this.store.setActiveId(id);
 
@@ -96,16 +100,16 @@ export class SwitchService {
     return { ok: true, message: `Switched to "${profile.label}".` };
   }
 
-  /** Undoes the last switch by restoring the file from the .bak copy. */
+  /** Undoes the last switch by restoring the snapshot taken before it. */
   async undoSwitch(): Promise<{ ok: boolean; message: string }> {
-    if (!this.credentials.hasBackup()) {
+    if (!(await this.credentials.hasBackup())) {
       return { ok: false, message: "No backup to restore." };
     }
-    const ok = this.credentials.restoreBackup();
+    const ok = await this.credentials.restoreBackup();
     if (!ok) {
       return { ok: false, message: "Failed to restore the backup." };
     }
-    // Update activeId based on the restored file.
+    // Update activeId based on the restored credential.
     const restored = this.credentials.readCurrent();
     const matched = restored ? await this.store.findByTokens(restored) : undefined;
     await this.store.setActiveId(matched);

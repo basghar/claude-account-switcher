@@ -95,17 +95,27 @@ export class AccountWindowService {
     folders: readonly vscode.WorkspaceFolder[],
     configDir: string
   ): WorkspaceFile {
+    const settings: Record<string, unknown> = {
+      "claudeCode.environmentVariables": [
+        {
+          name: "CLAUDE_CONFIG_DIR",
+          value: configDir,
+        },
+      ],
+    };
+
+    // CLAUDE_CONFIG_DIR is what isolates the window on every platform: it selects the
+    // credentials file on Windows and Linux, and the keychain item keyed to that directory
+    // on macOS. The path setting is only meaningful to a file backend, so it is written
+    // only when there is a path to write.
+    const credentialsPath = this.credentials.getCredentialsPath(configDir);
+    if (credentialsPath) {
+      settings["claudeSwitcher.credentialsPath"] = credentialsPath;
+    }
+
     return {
       folders: folders.map((folder) => ({ path: folder.uri.fsPath })),
-      settings: {
-        "claudeCode.environmentVariables": [
-          {
-            name: "CLAUDE_CONFIG_DIR",
-            value: configDir,
-          },
-        ],
-        "claudeSwitcher.credentialsPath": this.credentials.getCredentialsPath(configDir),
-      },
+      settings,
     };
   }
 
